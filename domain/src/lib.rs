@@ -33,7 +33,7 @@ impl Engineer {
     }
     pub fn serve_support(self) -> Result<Self, DomainError> {
         let today = self.today_strategy.execute();
-        if self.is_business_day(today) { 
+        if !self.is_business_day(today) { 
             Err(DomainError {
                 message: String::from("You should not be serving support on weekends. Go out, enjoy, get a life :-)")
             })
@@ -49,7 +49,7 @@ impl Engineer {
     }
 
     fn is_business_day(&self, today: NaiveDate) -> bool { 
-        today.weekday().num_days_from_monday() > 4
+        today.weekday().num_days_from_monday() <= 4
     }
 
     pub fn is_support_candidate_for_today(&self) -> bool {
@@ -182,7 +182,8 @@ mod tests {
 
         assert!(engineer_that_has_served_support
             .last_time_served
-            .eq(&Utc::now().date_naive()))
+            .eq(&Utc
+                .with_ymd_and_hms(2022, 12, 16, 10, 0, 0).unwrap().date_naive()));
     }
 
     #[test]
