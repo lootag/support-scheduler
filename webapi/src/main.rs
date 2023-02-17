@@ -1,4 +1,4 @@
 fn main() {
-    let i = 3;
+    let _i = 3;
     println!("Hello, world!");
 }
