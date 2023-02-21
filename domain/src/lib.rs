@@ -1,10 +1,7 @@
-use std::collections::btree_set::Difference;
-use std::collections::HashMap;
-use std::os::raw;
-
 use chrono::prelude::*;
 use chrono::Days;
 use chrono::Utc;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -81,17 +78,23 @@ impl TodayStrategy {
 }
 
 pub struct EngineeringDepartment {
-    engineer_serving_support: Option<Engineer>,
-    engineers_by_date: HashMap<AppDate, Engineer>,
-    engineers_list: Vec<Engineer>,
+    engineer_serving_support_today: Option<Engineer>,
+    engineers_by_last_date_served: HashMap<AppDate, Engineer>,
+    reservations_for_month: HashMap<AppDate, Engineer>,
+    rota: Rota
 }
 
 impl EngineeringDepartment {
-    pub fn new(engineers: Vec<Engineer>, engineer_serving_support: Option<Engineer>) -> Self {
+    pub fn new(
+        engineers: Vec<Engineer>,
+        engineer_serving_support_today: Option<Engineer>,
+        reservations_for_month: HashMap<AppDate, Engineer>,
+    ) -> Self {
         Self {
-            engineers_by_date: Self::engineers_by_date(&engineers),
-            engineer_serving_support: engineer_serving_support,
-            engineers_list: engineers,
+            engineers_by_last_date_served: Self::engineers_by_last_date_served(&engineers),
+            engineer_serving_support_today: engineer_serving_support_today,
+            reservations_for_month: reservations_for_month,
+            rota: Self::rota(&engineers),
         }
     }
 
@@ -102,21 +105,25 @@ impl EngineeringDepartment {
     }
 
     pub fn engineer_serving_on_date(self, date: AppDate) -> Result<Engineer, DomainError> {
-        let previous_date_when_engineer_served =
-            date.previous_date_when_engineer_served(self.rota_length_in_days())?;
-        self.engineers_by_date
-            .get(&previous_date_when_engineer_served)
-            .map_or_else(
-                || Err(DomainError::no_engineer_found()),
-                |e| Ok(e.clone()),
-            )
+        match self.reservations_for_month.get(&date) {
+            Some(engineer) => Ok(engineer.clone()),
+            None => self.compute_engineer_serving_on_date(date),
+        }
+    }
+
+    fn compute_engineer_serving_on_date(self, date: AppDate) -> Result<Engineer, DomainError> {
+        let last_date_served_by_engineer =
+            date.last_date_served_by_engineer(self.rota)?;
+        self.engineers_by_last_date_served
+            .get(&last_date_served_by_engineer)
+            .map_or_else(|| Err(DomainError::no_engineer_found()), |e| Ok(e.clone()))
     }
 
     pub fn calendar(period: Period) -> Calendar {
         todo!()
     }
 
-    fn engineers_by_date(engineers: &Vec<Engineer>) -> HashMap<AppDate, Engineer> {
+    fn engineers_by_last_date_served(engineers: &Vec<Engineer>) -> HashMap<AppDate, Engineer> {
         engineers
             .to_vec()
             .into_iter()
@@ -124,9 +131,28 @@ impl EngineeringDepartment {
             .collect::<HashMap<AppDate, Engineer>>()
     }
 
-    fn rota_length_in_days(&self) -> i64 {
-        let number_of_engineers = self.engineers_list.len() as i64;
-        number_of_engineers / 5 * 2 + number_of_engineers
+    fn rota(engineers: &Vec<Engineer>) -> Rota {
+        let number_of_engineers = engineers.len() as i64;
+        let number_of_business_days_in_a_week = 5;
+        let number_of_days_in_weekend = 2;
+        let lenght_in_days = number_of_engineers / number_of_business_days_in_a_week * number_of_days_in_weekend
+            + number_of_engineers;
+        Rota::new(lenght_in_days)
+    }
+}
+
+pub struct Rota {
+    length_in_days: i64,
+}
+
+impl Rota {
+    pub fn new(length_in_days: i64) -> Self { 
+        Self { 
+            length_in_days: length_in_days
+        }
+    }
+    pub fn length_in_days(&self) -> i64 {
+        self.length_in_days
     }
 }
 
@@ -180,11 +206,11 @@ impl AppDate {
         self.value.weekday() != Weekday::Sat && self.value.weekday() != Weekday::Sun
     }
 
-    pub fn previous_date_when_engineer_served(
+    pub fn last_date_served_by_engineer(
         self,
-        rota_length_in_days: i64,
+        rota: Rota,
     ) -> Result<AppDate, DomainError> {
-        let number_of_days_to_go_back = self.number_of_days_to_go_back(rota_length_in_days)?;
+        let number_of_days_to_go_back = self.number_of_days_to_go_back(rota.length_in_days())?;
         self.go_back_to_nearest_business_day(number_of_days_to_go_back)
     }
 
@@ -198,27 +224,21 @@ impl AppDate {
         self,
         number_of_days_to_go_back: i64,
     ) -> Result<AppDate, DomainError> {
-        self.go_back_to_nearest_business_day_opt(number_of_days_to_go_back)
-            .map_or_else(|| Err(DomainError::date_is_out_of_range()), |date| Ok(date))
-    }
-
-    fn go_back_to_nearest_business_day_opt(
-        self,
-        number_of_days_to_go_back: i64,
-    ) -> Option<AppDate> {
-        let date = self.go_back_n_days(number_of_days_to_go_back)?;
-        if date.is_business_day() {
-            Some(date)
+        let n_days_ago = self.go_back_n_days(number_of_days_to_go_back)?;
+        if n_days_ago.is_business_day() {
+            Ok(n_days_ago)
         } else {
-            Some(date.go_back_n_days(2)?)
+            n_days_ago.go_back_n_days(2)
         }
     }
 
-    fn go_back_n_days(self, number_of_days_to_go_back: i64) -> Option<AppDate> {
-        let date = self
-            .value
-            .checked_sub_days(Days::new(number_of_days_to_go_back as u64))?;
-        Some(AppDate::new(date))
+    fn go_back_n_days(self, number_of_days_to_go_back: i64) -> Result<AppDate, DomainError> {
+        self.value
+            .checked_sub_days(Days::new(number_of_days_to_go_back as u64))
+            .map_or_else(
+                || Err(DomainError::date_is_out_of_range()),
+                |date| Ok(AppDate::new(date)),
+            )
     }
 
     fn number_of_days_from_today(&self) -> Result<i64, DomainError> {
@@ -245,9 +265,9 @@ impl DomainError {
         }
     }
 
-    pub fn no_engineer_found() -> Self { 
-        Self { 
-            message: String::from("no engineer found")
+    pub fn no_engineer_found() -> Self {
+        Self {
+            message: String::from("no engineer found"),
         }
     }
 }
